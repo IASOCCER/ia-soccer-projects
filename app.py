@@ -1,0 +1,1 @@
+print('IA Soccer Projects App placeholder')
