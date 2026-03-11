@@ -1015,7 +1015,7 @@ elif page == "Budget":
                       expected_amount, real_amount, payment_status
                FROM budget
                WHERE project_id = ?
-               ORDER BY entry_type DESC, category""",
+               ORDER BY entry_type DESC, category, description""",
             (int(selected),)
         )
 
@@ -1030,88 +1030,135 @@ elif page == "Budget":
         a3.metric("Profit prévu", fmt_money(rev - cost))
         a4.metric("Profit réel", fmt_money(real_rev - real_cost))
 
-        st.subheader("Résumé budget général / individuel")
+        if not budget.empty:
+            st.subheader("Lignes budgétaires")
+            st.dataframe(budget, use_container_width=True, hide_index=True)
 
-budget_calc = budget.copy()
+            st.subheader("Résumé budget général / individuel")
 
-if not budget_calc.empty:
-    budget_calc["unit_count"] = pd.to_numeric(budget_calc["unit_count"], errors="coerce").fillna(1)
-    budget_calc["unit_amount"] = pd.to_numeric(budget_calc["unit_amount"], errors="coerce").fillna(0)
-    budget_calc["expected_amount"] = pd.to_numeric(budget_calc["expected_amount"], errors="coerce").fillna(0)
+            budget_calc = budget.copy()
+            budget_calc["unit_count"] = pd.to_numeric(budget_calc["unit_count"], errors="coerce").fillna(1)
+            budget_calc["unit_amount"] = pd.to_numeric(budget_calc["unit_amount"], errors="coerce").fillna(0)
+            budget_calc["expected_amount"] = pd.to_numeric(budget_calc["expected_amount"], errors="coerce").fillna(0)
+            budget_calc["real_amount"] = pd.to_numeric(budget_calc["real_amount"], errors="coerce").fillna(0)
 
-    revenue_total = budget_calc.loc[budget_calc["entry_type"] == "Revenue", "expected_amount"].sum()
-    cost_total = budget_calc.loc[budget_calc["entry_type"] == "Cost", "expected_amount"].sum()
-    profit_total = revenue_total - cost_total
+            revenue_total = budget_calc.loc[budget_calc["entry_type"] == "Revenue", "expected_amount"].sum()
+            cost_total = budget_calc.loc[budget_calc["entry_type"] == "Cost", "expected_amount"].sum()
+            profit_total = revenue_total - cost_total
 
-    revenue_pp_rows = budget_calc[
-        (budget_calc["entry_type"] == "Revenue") &
-        (budget_calc["budget_scope"] == "Par personne")
-    ]
-    cost_pp_rows = budget_calc[
-        (budget_calc["entry_type"] == "Cost") &
-        (budget_calc["budget_scope"] == "Par personne")
-    ]
+            revenue_pp_rows = budget_calc[
+                (budget_calc["entry_type"] == "Revenue") &
+                (budget_calc["budget_scope"] == "Par personne")
+            ]
+            cost_pp_rows = budget_calc[
+                (budget_calc["entry_type"] == "Cost") &
+                (budget_calc["budget_scope"] == "Par personne")
+            ]
 
-    revenue_general_rows = budget_calc[
-        (budget_calc["entry_type"] == "Revenue") &
-        (budget_calc["budget_scope"] == "Général")
-    ]
-    cost_general_rows = budget_calc[
-        (budget_calc["entry_type"] == "Cost") &
-        (budget_calc["budget_scope"] == "Général")
-    ]
+            revenue_general_rows = budget_calc[
+                (budget_calc["entry_type"] == "Revenue") &
+                (budget_calc["budget_scope"] == "Général")
+            ]
+            cost_general_rows = budget_calc[
+                (budget_calc["entry_type"] == "Cost") &
+                (budget_calc["budget_scope"] == "Général")
+            ]
 
-    revenue_per_person = revenue_pp_rows["unit_amount"].sum() if not revenue_pp_rows.empty else 0
-    cost_per_person = cost_pp_rows["unit_amount"].sum() if not cost_pp_rows.empty else 0
+            participants_list = budget_calc.loc[
+                budget_calc["budget_scope"] == "Par personne", "unit_count"
+            ].tolist()
+            participants = int(max(participants_list)) if participants_list else 0
 
-    participants_list = budget_calc.loc[
-        budget_calc["budget_scope"] == "Par personne", "unit_count"
-    ].tolist()
-    participants = int(max(participants_list)) if participants_list else 0
+            revenue_per_person_direct = revenue_pp_rows["unit_amount"].sum() if not revenue_pp_rows.empty else 0
+            cost_per_person_direct = cost_pp_rows["unit_amount"].sum() if not cost_pp_rows.empty else 0
 
-    general_revenue_per_person = (revenue_general_rows["expected_amount"].sum() / participants) if participants > 0 else 0
-    general_cost_per_person = (cost_general_rows["expected_amount"].sum() / participants) if participants > 0 else 0
+            revenue_general_per_person = revenue_general_rows["expected_amount"].sum() / participants if participants > 0 else 0
+            cost_general_per_person = cost_general_rows["expected_amount"].sum() / participants if participants > 0 else 0
 
-    revenue_per_person_full = revenue_per_person + general_revenue_per_person
-    cost_per_person_full = cost_per_person + general_cost_per_person
-    profit_per_person = revenue_per_person_full - cost_per_person_full
+            revenue_per_person_full = revenue_per_person_direct + revenue_general_per_person
+            cost_per_person_full = cost_per_person_direct + cost_general_per_person
+            profit_per_person = revenue_per_person_full - cost_per_person_full
 
-    summary_df = pd.DataFrame([
-        {
-            "Indicateur": "Participants",
-            "Total projet": participants,
-            "Par personne": participants
-        },
-        {
-            "Indicateur": "Revenue",
-            "Total projet": revenue_total,
-            "Par personne": revenue_per_person_full
-        },
-        {
-            "Indicateur": "Cost",
-            "Total projet": cost_total,
-            "Par personne": cost_per_person_full
-        },
-        {
-            "Indicateur": "Profit",
-            "Total projet": profit_total,
-            "Par personne": profit_per_person
-        },
-    ])
+            summary_df = pd.DataFrame([
+                {
+                    "Indicateur": "Participants",
+                    "Total projet": participants,
+                    "Par personne": participants
+                },
+                {
+                    "Indicateur": "Revenue",
+                    "Total projet": revenue_total,
+                    "Par personne": revenue_per_person_full
+                },
+                {
+                    "Indicateur": "Cost",
+                    "Total projet": cost_total,
+                    "Par personne": cost_per_person_full
+                },
+                {
+                    "Indicateur": "Profit",
+                    "Total projet": profit_total,
+                    "Par personne": profit_per_person
+                },
+            ])
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            st.info(
+                f"Par personne: revenu {fmt_money(revenue_per_person_full)} | "
+                f"coût {fmt_money(cost_per_person_full)} | "
+                f"profit {fmt_money(profit_per_person)}"
+            )
 
-    st.info(
-        f"Par personne: revenu {fmt_money(revenue_per_person_full)} | "
-        f"coût {fmt_money(cost_per_person_full)} | "
-        f"profit {fmt_money(profit_per_person)}"
-    )
+            st.subheader("Détail du coût / revenu par personne")
 
-finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
-finance_chart = finance_chart.set_index("entry_type")
-st.bar_chart(finance_chart)
+            detail_rows = []
 
-with st.form("add_budget"):
+            for _, row in revenue_pp_rows.iterrows():
+                detail_rows.append({
+                    "Type": "Revenue",
+                    "Catégorie": row["category"],
+                    "Description": row["description"],
+                    "Mode": "Direct",
+                    "Par personne": float(row["unit_amount"])
+                })
+
+            for _, row in cost_pp_rows.iterrows():
+                detail_rows.append({
+                    "Type": "Cost",
+                    "Catégorie": row["category"],
+                    "Description": row["description"],
+                    "Mode": "Direct",
+                    "Par personne": float(row["unit_amount"])
+                })
+
+            if participants > 0:
+                for _, row in revenue_general_rows.iterrows():
+                    detail_rows.append({
+                        "Type": "Revenue",
+                        "Catégorie": row["category"],
+                        "Description": row["description"],
+                        "Mode": "Réparti",
+                        "Par personne": float(row["expected_amount"]) / participants
+                    })
+
+                for _, row in cost_general_rows.iterrows():
+                    detail_rows.append({
+                        "Type": "Cost",
+                        "Catégorie": row["category"],
+                        "Description": row["description"],
+                        "Mode": "Réparti",
+                        "Par personne": float(row["expected_amount"]) / participants
+                    })
+
+            if detail_rows:
+                detail_df = pd.DataFrame(detail_rows)
+                st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+            finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
+            finance_chart = finance_chart.set_index("entry_type")
+            st.bar_chart(finance_chart)
+
+        with st.form("add_budget"):
             st.subheader("Ajouter une ligne de budget")
             b1, b2, b3 = st.columns(3)
             entry_type = b1.selectbox("Type", ENTRY_TYPES)
@@ -1122,6 +1169,9 @@ with st.form("add_budget"):
             budget_scope = c1.selectbox("Mode", BUDGET_SCOPE)
             unit_count = c2.number_input("Nombre de personnes / unités", min_value=1.0, step=1.0, value=1.0)
             unit_amount = c3.number_input("Montant unitaire", min_value=0.0, step=50.0)
+
+            expected_preview = float(unit_count * unit_amount) if budget_scope == "Par personne" else float(unit_amount)
+            st.caption(f"Total prévu calculé: {fmt_money(expected_preview)}")
 
             d1, d2 = st.columns(2)
             real_amount = d1.number_input("Montant réel", min_value=0.0, step=100.0)
@@ -1199,7 +1249,6 @@ with st.form("add_budget"):
                     refresh_project_totals(int(selected))
                     st.success("Ligne supprimée.")
                     st.rerun()
-
 elif page == "Tâches":
     st.title("Tâches")
     tasks = fetch_df("""
