@@ -1,11 +1,14 @@
-IA Soccer Projects Pro
+IA Soccer Projects Pro V3
 
-Version 2:
-- edição dos projetos
-- edição das fases
+Version 3:
+- dashboard profissional
+- filtros
+- gráficos
+- edição de projetos
 - edição e eliminação do budget
 - edição e eliminação das tarefas
-- estrutura mais profissional
+- gestão de fases
+- gestão da equipa
 
 Déploiement Streamlit:
 Repository: iasoccer/ia-soccer-projects
