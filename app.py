@@ -1107,11 +1107,11 @@ if not budget_calc.empty:
         f"profit {fmt_money(profit_per_person)}"
     )
 
-            finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
-            finance_chart = finance_chart.set_index("entry_type")
-            st.bar_chart(finance_chart)
+finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
+finance_chart = finance_chart.set_index("entry_type")
+st.bar_chart(finance_chart)
 
-        with st.form("add_budget"):
+with st.form("add_budget"):
             st.subheader("Ajouter une ligne de budget")
             b1, b2, b3 = st.columns(3)
             entry_type = b1.selectbox("Type", ENTRY_TYPES)
