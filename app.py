@@ -1030,23 +1030,82 @@ elif page == "Budget":
         a3.metric("Profit prévu", fmt_money(rev - cost))
         a4.metric("Profit réel", fmt_money(real_rev - real_cost))
 
-        if not budget.empty:
-            st.subheader("Lignes budgétaires")
-            st.dataframe(budget, use_container_width=True, hide_index=True)
+        st.subheader("Résumé budget général / individuel")
 
-            st.subheader("Résumé budget général / individuel")
-            resume_rows = []
-            for entry_type in ENTRY_TYPES:
-                sub = budget[budget["entry_type"] == entry_type]
-                general_total = sub[sub["budget_scope"] == "Général"]["expected_amount"].fillna(0).sum() if not sub.empty else 0
-                indiv_total = sub[sub["budget_scope"] == "Par personne"]["expected_amount"].fillna(0).sum() if not sub.empty else 0
-                resume_rows.append({
-                    "Type": entry_type,
-                    "Général": general_total,
-                    "Par personne (total calculé)": indiv_total,
-                    "Total": general_total + indiv_total
-                })
-            st.dataframe(pd.DataFrame(resume_rows), use_container_width=True, hide_index=True)
+budget_calc = budget.copy()
+
+if not budget_calc.empty:
+    budget_calc["unit_count"] = pd.to_numeric(budget_calc["unit_count"], errors="coerce").fillna(1)
+    budget_calc["unit_amount"] = pd.to_numeric(budget_calc["unit_amount"], errors="coerce").fillna(0)
+    budget_calc["expected_amount"] = pd.to_numeric(budget_calc["expected_amount"], errors="coerce").fillna(0)
+
+    revenue_total = budget_calc.loc[budget_calc["entry_type"] == "Revenue", "expected_amount"].sum()
+    cost_total = budget_calc.loc[budget_calc["entry_type"] == "Cost", "expected_amount"].sum()
+    profit_total = revenue_total - cost_total
+
+    revenue_pp_rows = budget_calc[
+        (budget_calc["entry_type"] == "Revenue") &
+        (budget_calc["budget_scope"] == "Par personne")
+    ]
+    cost_pp_rows = budget_calc[
+        (budget_calc["entry_type"] == "Cost") &
+        (budget_calc["budget_scope"] == "Par personne")
+    ]
+
+    revenue_general_rows = budget_calc[
+        (budget_calc["entry_type"] == "Revenue") &
+        (budget_calc["budget_scope"] == "Général")
+    ]
+    cost_general_rows = budget_calc[
+        (budget_calc["entry_type"] == "Cost") &
+        (budget_calc["budget_scope"] == "Général")
+    ]
+
+    revenue_per_person = revenue_pp_rows["unit_amount"].sum() if not revenue_pp_rows.empty else 0
+    cost_per_person = cost_pp_rows["unit_amount"].sum() if not cost_pp_rows.empty else 0
+
+    participants_list = budget_calc.loc[
+        budget_calc["budget_scope"] == "Par personne", "unit_count"
+    ].tolist()
+    participants = int(max(participants_list)) if participants_list else 0
+
+    general_revenue_per_person = (revenue_general_rows["expected_amount"].sum() / participants) if participants > 0 else 0
+    general_cost_per_person = (cost_general_rows["expected_amount"].sum() / participants) if participants > 0 else 0
+
+    revenue_per_person_full = revenue_per_person + general_revenue_per_person
+    cost_per_person_full = cost_per_person + general_cost_per_person
+    profit_per_person = revenue_per_person_full - cost_per_person_full
+
+    summary_df = pd.DataFrame([
+        {
+            "Indicateur": "Participants",
+            "Total projet": participants,
+            "Par personne": participants
+        },
+        {
+            "Indicateur": "Revenue",
+            "Total projet": revenue_total,
+            "Par personne": revenue_per_person_full
+        },
+        {
+            "Indicateur": "Cost",
+            "Total projet": cost_total,
+            "Par personne": cost_per_person_full
+        },
+        {
+            "Indicateur": "Profit",
+            "Total projet": profit_total,
+            "Par personne": profit_per_person
+        },
+    ])
+
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    st.info(
+        f"Par personne: revenu {fmt_money(revenue_per_person_full)} | "
+        f"coût {fmt_money(cost_per_person_full)} | "
+        f"profit {fmt_money(profit_per_person)}"
+    )
 
             finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
             finance_chart = finance_chart.set_index("entry_type")
