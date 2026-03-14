@@ -274,6 +274,21 @@ def recalc_project_totals(project_id):
     )
 
 
+def metrics():
+    projects = fetch_df("SELECT * FROM projects")
+    if projects.empty:
+        return 0, 0, 0, 0
+
+    projects["expected_revenue"] = pd.to_numeric(projects["expected_revenue"], errors="coerce").fillna(0)
+    projects["expected_cost"] = pd.to_numeric(projects["expected_cost"], errors="coerce").fillna(0)
+
+    rev = projects["expected_revenue"].sum()
+    cost = projects["expected_cost"].sum()
+    profit = rev - cost
+
+    return len(projects), rev, cost, profit
+
+
 def get_project_progress():
     projects = fetch_df("SELECT project_id, project_name FROM projects ORDER BY start_date")
     tasks = fetch_df("SELECT project_id, task_status FROM tasks")
@@ -487,19 +502,9 @@ if search_term:
 if page == "Dashboard":
     st.title("Dashboard exécutif")
 
-    def metrics():
-    projects = fetch_df("SELECT * FROM projects")
-    if projects.empty:
-        return 0, 0, 0, 0
-
-    projects["expected_revenue"] = pd.to_numeric(projects["expected_revenue"], errors="coerce").fillna(0)
-    projects["expected_cost"] = pd.to_numeric(projects["expected_cost"], errors="coerce").fillna(0)
-
-    rev = projects["expected_revenue"].sum()
-    cost = projects["expected_cost"].sum()
-    profit = rev - cost
-
-    return len(projects), rev, cost, profit
+    count, rev, cost, profit = metrics()
+    real_rev, real_cost, real_profit = get_real_totals()
+    overdue, urgent = get_overdue_urgent_counts()
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Projets", count)
