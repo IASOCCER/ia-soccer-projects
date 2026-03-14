@@ -1,13 +1,18 @@
 import sqlite3
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
+import shutil
+import io
+import json
 
 DB_PATH = Path(__file__).with_name("ia_soccer_projects.db")
+BACKUP_DIR = Path(__file__).with_name("backups")
+BACKUP_DIR.mkdir(exist_ok=True)
 
 st.set_page_config(
-    page_title="IA Soccer Projects Pro V4",
+    page_title="IA Soccer Projects Pro V7",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -170,6 +175,9 @@ st.markdown(
         padding-top: 1rem;
         padding-bottom: 2rem;
     }
+    h1, h2, h3 {
+        font-weight: 700;
+    }
     div[data-testid="stMetric"] {
         background-color: #f7f9fc;
         border: 1px solid #e6ebf2;
@@ -183,6 +191,23 @@ st.markdown(
         padding: 16px;
         margin-bottom: 12px;
     }
+    .status-card {
+        background: #fafbfc;
+        border: 1px solid #dde4ee;
+        border-radius: 16px;
+        padding: 14px;
+        min-height: 260px;
+    }
+    .task-pill {
+        border: 1px solid #e6ebf2;
+        border-radius: 12px;
+        padding: 10px;
+        margin-bottom: 8px;
+        background: white;
+    }
+    .stButton button {
+        border-radius: 10px;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -190,42 +215,54 @@ st.markdown(
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(
+        DB_PATH,
+        check_same_thread=False,
+        timeout=30
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def fetch_df(query, params=()):
     conn = get_conn()
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    try:
+        df = pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
     return df
 
 
 def execute(query, params=()):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(query, params)
-    conn.commit()
-    lastrowid = cur.lastrowid
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(query, params)
+        conn.commit()
+        lastrowid = cur.lastrowid
+    finally:
+        conn.close()
     return lastrowid
 
 
 def executescript(script):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.executescript(script)
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.executescript(script)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def column_exists(table_name, column_name):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    cols = [row[1] for row in cur.fetchall()]
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table_name})")
+        cols = [row[1] for row in cur.fetchall()]
+    finally:
+        conn.close()
     return column_name in cols
 
 
@@ -249,6 +286,72 @@ def fmt_money(v):
         return f"${float(v):,.0f}"
     except Exception:
         return "$0"
+
+
+def ensure_backup_dir():
+    BACKUP_DIR.mkdir(exist_ok=True)
+    return BACKUP_DIR
+
+
+def create_db_backup():
+    backup_dir = ensure_backup_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = backup_dir / f"ia_soccer_projects_backup_{timestamp}.db"
+    if DB_PATH.exists():
+        shutil.copy2(DB_PATH, backup_file)
+        return backup_file
+    return None
+
+
+def auto_backup_once_per_day():
+    today_key = datetime.now().strftime("%Y%m%d")
+    marker = BACKUP_DIR / f".last_auto_backup_{today_key}"
+    if DB_PATH.exists() and not marker.exists():
+        create_db_backup()
+        marker.write_text("ok", encoding="utf-8")
+
+
+def list_backups():
+    backup_dir = ensure_backup_dir()
+    return sorted(backup_dir.glob("*.db"), reverse=True)
+
+
+def restore_db_backup(uploaded_file):
+    try:
+        with open(DB_PATH, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return True, "Backup restauré avec succès."
+    except Exception as e:
+        return False, f"Erreur pendant la restauration : {e}"
+
+
+def get_db_download_bytes():
+    if DB_PATH.exists():
+        return DB_PATH.read_bytes()
+    return None
+
+
+def export_all_to_excel():
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        fetch_df("SELECT * FROM projects").to_excel(writer, sheet_name="projects", index=False)
+        fetch_df("SELECT * FROM phases").to_excel(writer, sheet_name="phases", index=False)
+        fetch_df("SELECT * FROM tasks").to_excel(writer, sheet_name="tasks", index=False)
+        fetch_df("SELECT * FROM budget").to_excel(writer, sheet_name="budget", index=False)
+        fetch_df("SELECT * FROM people").to_excel(writer, sheet_name="people", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def export_all_to_json():
+    data = {
+        "projects": fetch_df("SELECT * FROM projects").to_dict(orient="records"),
+        "phases": fetch_df("SELECT * FROM phases").to_dict(orient="records"),
+        "tasks": fetch_df("SELECT * FROM tasks").to_dict(orient="records"),
+        "budget": fetch_df("SELECT * FROM budget").to_dict(orient="records"),
+        "people": fetch_df("SELECT * FROM people").to_dict(orient="records"),
+    }
+    return json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
 
 
 def init_db():
@@ -332,10 +435,7 @@ def recalc_budget_line_amounts(project_id):
         unit_count = float(row["unit_count"]) if pd.notna(row["unit_count"]) else 1
         unit_amount = float(row["unit_amount"]) if pd.notna(row["unit_amount"]) else 0
 
-        if scope == "Par personne":
-            expected_amount = unit_count * unit_amount
-        else:
-            expected_amount = unit_amount
+        expected_amount = unit_count * unit_amount if scope == "Par personne" else unit_amount
 
         execute(
             "UPDATE budget SET expected_amount = ? WHERE budget_id = ?",
@@ -576,6 +676,26 @@ def metrics():
     return len(projects), rev, cost, rev - cost
 
 
+def get_all_tasks():
+    return fetch_df("""
+        SELECT t.task_id, t.project_id, p.project_name, ph.phase_name, t.task_name, t.task_responsible,
+               t.task_due_date, t.task_status, t.task_priority, t.notes
+        FROM tasks t
+        JOIN projects p ON p.project_id = t.project_id
+        LEFT JOIN phases ph ON ph.phase_id = t.phase_id
+        ORDER BY t.task_due_date, t.task_priority
+    """)
+
+
+def get_real_totals():
+    budget = fetch_df("SELECT * FROM budget")
+    if budget.empty:
+        return 0, 0, 0
+    real_rev = budget.loc[budget["entry_type"] == "Revenue", "real_amount"].fillna(0).sum()
+    real_cost = budget.loc[budget["entry_type"] == "Cost", "real_amount"].fillna(0).sum()
+    return real_rev, real_cost, real_rev - real_cost
+
+
 def get_urgent_tasks(project_ids=None, limit=20):
     query = """
         SELECT
@@ -623,31 +743,146 @@ def get_urgent_tasks(project_ids=None, limit=20):
     priority_order = {"Haute": 0, "Moyenne": 1, "Basse": 2}
     df["priority_sort"] = df["task_priority"].map(priority_order).fillna(1)
     df["days_sort"] = df["days_left"].fillna(9999)
-
     df = df.sort_values(["days_sort", "priority_sort", "project_name"])
     return df.head(limit)
 
 
+def get_overdue_and_urgent_counts():
+    tasks_all = get_all_tasks()
+    if tasks_all.empty:
+        return 0, 0
+
+    tasks_all["due"] = pd.to_datetime(tasks_all["task_due_date"], errors="coerce")
+    overdue = len(
+        tasks_all[
+            (tasks_all["due"].notna()) &
+            (tasks_all["due"].dt.date < date.today()) &
+            (tasks_all["task_status"] != "Terminé")
+        ]
+    )
+    urgent = len(
+        tasks_all[
+            (tasks_all["due"].notna()) &
+            (tasks_all["due"].dt.date <= date.today()) &
+            (tasks_all["task_status"] != "Terminé")
+        ]
+    )
+    return overdue, urgent
+
+
+def get_project_progress():
+    projects = fetch_df("SELECT project_id, project_name FROM projects ORDER BY start_date")
+    tasks = fetch_df("SELECT project_id, task_status FROM tasks")
+    rows = []
+
+    for _, p in projects.iterrows():
+        p_tasks = tasks[tasks["project_id"] == p["project_id"]]
+        total = len(p_tasks)
+        done = len(p_tasks[p_tasks["task_status"] == "Terminé"])
+        progress = round((done / total) * 100, 1) if total > 0 else 0
+        rows.append({
+            "project_id": p["project_id"],
+            "project_name": p["project_name"],
+            "tasks_total": total,
+            "tasks_done": done,
+            "progress_pct": progress
+        })
+
+    return pd.DataFrame(rows)
+
+
+def global_search(term):
+    term_like = f"%{term}%"
+    projects = fetch_df("""
+        SELECT 'Projet' AS source, project_name AS title, city AS subinfo, CAST(project_id AS TEXT) AS ref
+        FROM projects
+        WHERE project_name LIKE ? OR city LIKE ? OR country LIKE ? OR main_location LIKE ? OR short_description LIKE ?
+    """, (term_like, term_like, term_like, term_like, term_like))
+
+    tasks = fetch_df("""
+        SELECT 'Tâche' AS source, task_name AS title, task_responsible AS subinfo, CAST(task_id AS TEXT) AS ref
+        FROM tasks
+        WHERE task_name LIKE ? OR task_responsible LIKE ? OR notes LIKE ?
+    """, (term_like, term_like, term_like))
+
+    people = fetch_df("""
+        SELECT 'Équipe' AS source, full_name AS title, role_title AS subinfo, CAST(person_id AS TEXT) AS ref
+        FROM people
+        WHERE full_name LIKE ? OR role_title LIKE ? OR email LIKE ? OR phone LIKE ?
+    """, (term_like, term_like, term_like, term_like))
+
+    budget = fetch_df("""
+        SELECT 'Budget' AS source, description AS title, category AS subinfo, CAST(budget_id AS TEXT) AS ref
+        FROM budget
+        WHERE description LIKE ? OR category LIKE ?
+    """, (term_like, term_like))
+
+    return pd.concat([projects, tasks, people, budget], ignore_index=True)
+
+
+def render_task_card(row):
+    due = row["task_due_date"] if pd.notna(row["task_due_date"]) and row["task_due_date"] != "" else "-"
+    responsible = row["task_responsible"] if pd.notna(row["task_responsible"]) and row["task_responsible"] != "" else "-"
+    priority = row["task_priority"] if pd.notna(row["task_priority"]) else "-"
+    project_name = row["project_name"] if pd.notna(row["project_name"]) else "-"
+    notes = row["notes"] if pd.notna(row["notes"]) and row["notes"] != "" else ""
+    st.markdown(
+        f"""
+        <div class="task-pill">
+            <b>{row["task_name"]}</b><br>
+            Projet: {project_name}<br>
+            Responsable: {responsible}<br>
+            Date: {due}<br>
+            Priorité: {priority}<br>
+            {notes}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 init_db()
 seed_demo()
+auto_backup_once_per_day()
 
-st.sidebar.title("⚽ IA Soccer Projects Pro V4")
+st.sidebar.title("⚽ IA Soccer Projects Pro V7")
+search_term = st.sidebar.text_input("Recherche globale")
+
 page = st.sidebar.radio(
     "Navigation",
-    ["Dashboard", "Projets", "Nouveau projet", "Timeline", "Budget", "Tâches", "Équipe"]
+    ["Dashboard", "Projets", "Nouveau projet", "Timeline", "Budget", "Tâches", "Board", "Équipe", "Analytics", "Backup"]
 )
 
-if page == "Dashboard":
-    st.title("Dashboard")
-    count, rev, cost, profit = metrics()
+if search_term:
+    st.sidebar.markdown("### Résultats")
+    results = global_search(search_term)
+    if results.empty:
+        st.sidebar.info("Aucun résultat")
+    else:
+        st.sidebar.dataframe(results.head(12), use_container_width=True, hide_index=True)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Projets actifs", count)
-    m2.metric("Revenu prévu", fmt_money(rev))
-    m3.metric("Coût prévu", fmt_money(cost))
+if page == "Dashboard":
+    st.title("Dashboard exécutif")
+
+    count, rev, cost, profit = metrics()
+    real_rev, real_cost, real_profit = get_real_totals()
+    overdue, urgent = get_overdue_and_urgent_counts()
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Projets", count)
+    m2.metric("Revenue prévu", fmt_money(rev))
+    m3.metric("Cost prévu", fmt_money(cost))
     m4.metric("Profit prévu", fmt_money(profit))
+    m5.metric("Tâches urgentes", urgent)
+    m6.metric("En retard", overdue)
+
+    x1, x2, x3 = st.columns(3)
+    x1.metric("Revenue réel", fmt_money(real_rev))
+    x2.metric("Cost réel", fmt_money(real_cost))
+    x3.metric("Profit réel", fmt_money(real_profit))
 
     projects = fetch_df("SELECT * FROM projects ORDER BY start_date")
+    progress_df = get_project_progress()
 
     if projects.empty:
         st.info("Aucun projet disponible.")
@@ -667,31 +902,37 @@ if page == "Dashboard":
         if city_filter != "Tous":
             filtered_projects = filtered_projects[filtered_projects["city"] == city_filter]
 
-        c1, c2 = st.columns([1.15, 1])
+        if not filtered_projects.empty and not progress_df.empty:
+            filtered_projects = filtered_projects.merge(
+                progress_df[["project_id", "progress_pct", "tasks_total", "tasks_done"]],
+                on="project_id",
+                how="left"
+            )
+
+        c1, c2 = st.columns([1.2, 1])
 
         with c1:
-            st.subheader("Projets")
+            st.subheader("Vue projets")
             if filtered_projects.empty:
                 st.info("Aucun projet avec ces filtres.")
             else:
-                st.dataframe(
-                    filtered_projects[[
-                        "project_name", "project_type", "city", "start_date", "end_date",
-                        "project_status", "priority", "expected_revenue", "expected_cost"
-                    ]],
-                    use_container_width=True,
-                    hide_index=True
-                )
+                display_cols = [
+                    "project_name", "project_type", "city", "start_date", "end_date",
+                    "project_status", "priority", "expected_revenue", "expected_cost",
+                    "progress_pct"
+                ]
+                existing_cols = [c for c in display_cols if c in filtered_projects.columns]
+                st.dataframe(filtered_projects[existing_cols], use_container_width=True, hide_index=True)
 
-                st.subheader("Revenus et coûts par projet")
+                st.subheader("Finance par projet")
                 finance = filtered_projects[["project_name", "expected_revenue", "expected_cost"]].copy()
                 finance = finance.set_index("project_name")
                 st.bar_chart(finance)
 
         with c2:
-            st.subheader("Tâches urgentes par projet")
+            st.subheader("Tâches urgentes")
             filtered_ids = filtered_projects["project_id"].tolist() if not filtered_projects.empty else []
-            urgent_tasks = get_urgent_tasks(filtered_ids, limit=20)
+            urgent_tasks = get_urgent_tasks(filtered_ids, limit=15)
 
             if urgent_tasks.empty:
                 st.success("Aucune tâche urgente.")
@@ -705,37 +946,39 @@ if page == "Dashboard":
                     hide_index=True
                 )
 
-                overdue = urgent_tasks[urgent_tasks["alert"] == "En retard"]
-                due_soon = urgent_tasks[urgent_tasks["alert"].isin(["Aujourd’hui", "Urgent"])]
-
-                x1, x2 = st.columns(2)
-                x1.metric("Tâches en retard", len(overdue))
-                x2.metric("Tâches urgentes 7j", len(due_soon))
-
         if not filtered_projects.empty:
-            st.subheader("Répartition des projets par type")
-            type_counts = filtered_projects.groupby("project_type").size().reset_index(name="count")
-            type_counts = type_counts.set_index("project_type")
-            st.bar_chart(type_counts)
+            a1, a2 = st.columns(2)
 
-            st.subheader("Vue exécutive des projets")
-            exec_df = filtered_projects[[
-                "project_name", "project_status", "priority",
-                "expected_revenue", "expected_cost"
-            ]].copy()
-            exec_df["profit"] = exec_df["expected_revenue"].fillna(0) - exec_df["expected_cost"].fillna(0)
-            st.dataframe(exec_df, use_container_width=True, hide_index=True)
+            with a1:
+                st.subheader("Répartition par type")
+                type_counts = filtered_projects.groupby("project_type").size().reset_index(name="count")
+                type_counts = type_counts.set_index("project_type")
+                st.bar_chart(type_counts)
+
+            with a2:
+                st.subheader("Répartition par status")
+                status_counts = filtered_projects.groupby("project_status").size().reset_index(name="count")
+                status_counts = status_counts.set_index("project_status")
+                st.bar_chart(status_counts)
+
+            st.subheader("Progression des projets")
+            prog_chart = filtered_projects[["project_name", "progress_pct"]].copy().set_index("project_name")
+            st.bar_chart(prog_chart)
 
 elif page == "Projets":
     st.title("Projets")
     projects = fetch_df("SELECT * FROM projects ORDER BY start_date")
+    progress_df = get_project_progress()
+
+    if not projects.empty and not progress_df.empty:
+        projects = projects.merge(progress_df[["project_id", "progress_pct"]], on="project_id", how="left")
 
     st.dataframe(
         projects[[
             "project_id", "project_name", "project_type", "city", "country",
             "start_date", "end_date", "main_responsible", "project_status",
-            "priority", "expected_revenue", "expected_cost"
-        ]],
+            "priority", "expected_revenue", "expected_cost", "progress_pct"
+        ]] if not projects.empty else projects,
         use_container_width=True,
         hide_index=True
     )
@@ -924,6 +1167,21 @@ elif page == "Timeline":
         if not phases.empty:
             st.dataframe(phases, use_container_width=True, hide_index=True)
 
+            chart_df = phases.copy()
+            chart_df["phase_start_date"] = pd.to_datetime(chart_df["phase_start_date"], errors="coerce")
+            chart_df["phase_end_date"] = pd.to_datetime(chart_df["phase_end_date"], errors="coerce")
+
+            duration_rows = []
+            for _, row in chart_df.iterrows():
+                if pd.notna(row["phase_start_date"]) and pd.notna(row["phase_end_date"]):
+                    duration = max((row["phase_end_date"] - row["phase_start_date"]).days, 0)
+                else:
+                    duration = 0
+                duration_rows.append({"phase_name": row["phase_name"], "duration_days": duration})
+            duration_df = pd.DataFrame(duration_rows).set_index("phase_name")
+            st.subheader("Durée estimée des phases")
+            st.bar_chart(duration_df)
+
             st.subheader("Vue timeline")
             for _, ph in phases.iterrows():
                 st.markdown(
@@ -1024,18 +1282,18 @@ elif page == "Budget":
         real_rev = budget.loc[budget["entry_type"] == "Revenue", "real_amount"].fillna(0).sum() if not budget.empty else 0
         real_cost = budget.loc[budget["entry_type"] == "Cost", "real_amount"].fillna(0).sum() if not budget.empty else 0
 
-        a1, a2, a3, a4 = st.columns(4)
+        a1, a2, a3, a4, a5 = st.columns(5)
         a1.metric("Revenu prévu", fmt_money(rev))
         a2.metric("Coût prévu", fmt_money(cost))
         a3.metric("Profit prévu", fmt_money(rev - cost))
         a4.metric("Profit réel", fmt_money(real_rev - real_cost))
+        a5.metric("Écart réel/prévu", fmt_money((real_rev - real_cost) - (rev - cost)))
 
         if not budget.empty:
             st.subheader("Lignes budgétaires")
             st.dataframe(budget, use_container_width=True, hide_index=True)
 
             st.subheader("Résumé budget général / individuel")
-
             budget_calc = budget.copy()
             budget_calc["unit_count"] = pd.to_numeric(budget_calc["unit_count"], errors="coerce").fillna(1)
             budget_calc["unit_amount"] = pd.to_numeric(budget_calc["unit_amount"], errors="coerce").fillna(0)
@@ -1046,32 +1304,16 @@ elif page == "Budget":
             cost_total = budget_calc.loc[budget_calc["entry_type"] == "Cost", "expected_amount"].sum()
             profit_total = revenue_total - cost_total
 
-            revenue_pp_rows = budget_calc[
-                (budget_calc["entry_type"] == "Revenue") &
-                (budget_calc["budget_scope"] == "Par personne")
-            ]
-            cost_pp_rows = budget_calc[
-                (budget_calc["entry_type"] == "Cost") &
-                (budget_calc["budget_scope"] == "Par personne")
-            ]
+            revenue_pp_rows = budget_calc[(budget_calc["entry_type"] == "Revenue") & (budget_calc["budget_scope"] == "Par personne")]
+            cost_pp_rows = budget_calc[(budget_calc["entry_type"] == "Cost") & (budget_calc["budget_scope"] == "Par personne")]
+            revenue_general_rows = budget_calc[(budget_calc["entry_type"] == "Revenue") & (budget_calc["budget_scope"] == "Général")]
+            cost_general_rows = budget_calc[(budget_calc["entry_type"] == "Cost") & (budget_calc["budget_scope"] == "Général")]
 
-            revenue_general_rows = budget_calc[
-                (budget_calc["entry_type"] == "Revenue") &
-                (budget_calc["budget_scope"] == "Général")
-            ]
-            cost_general_rows = budget_calc[
-                (budget_calc["entry_type"] == "Cost") &
-                (budget_calc["budget_scope"] == "Général")
-            ]
-
-            participants_list = budget_calc.loc[
-                budget_calc["budget_scope"] == "Par personne", "unit_count"
-            ].tolist()
+            participants_list = budget_calc.loc[budget_calc["budget_scope"] == "Par personne", "unit_count"].tolist()
             participants = int(max(participants_list)) if participants_list else 0
 
             revenue_per_person_direct = revenue_pp_rows["unit_amount"].sum() if not revenue_pp_rows.empty else 0
             cost_per_person_direct = cost_pp_rows["unit_amount"].sum() if not cost_pp_rows.empty else 0
-
             revenue_general_per_person = revenue_general_rows["expected_amount"].sum() / participants if participants > 0 else 0
             cost_general_per_person = cost_general_rows["expected_amount"].sum() / participants if participants > 0 else 0
 
@@ -1080,83 +1322,27 @@ elif page == "Budget":
             profit_per_person = revenue_per_person_full - cost_per_person_full
 
             summary_df = pd.DataFrame([
-                {
-                    "Indicateur": "Participants",
-                    "Total projet": participants,
-                    "Par personne": participants
-                },
-                {
-                    "Indicateur": "Revenue",
-                    "Total projet": revenue_total,
-                    "Par personne": revenue_per_person_full
-                },
-                {
-                    "Indicateur": "Cost",
-                    "Total projet": cost_total,
-                    "Par personne": cost_per_person_full
-                },
-                {
-                    "Indicateur": "Profit",
-                    "Total projet": profit_total,
-                    "Par personne": profit_per_person
-                },
+                {"Indicateur": "Participants", "Total projet": participants, "Par personne": participants},
+                {"Indicateur": "Revenue", "Total projet": revenue_total, "Par personne": revenue_per_person_full},
+                {"Indicateur": "Cost", "Total projet": cost_total, "Par personne": cost_per_person_full},
+                {"Indicateur": "Profit", "Total projet": profit_total, "Par personne": profit_per_person},
             ])
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-            st.info(
-                f"Par personne: revenu {fmt_money(revenue_per_person_full)} | "
-                f"coût {fmt_money(cost_per_person_full)} | "
-                f"profit {fmt_money(profit_per_person)}"
-            )
+            c1, c2 = st.columns(2)
+            with c1:
+                finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index().set_index("entry_type")
+                st.subheader("Prévu par type")
+                st.bar_chart(finance_chart)
 
-            st.subheader("Détail du coût / revenu par personne")
+            with c2:
+                real_chart = budget.groupby("entry_type")["real_amount"].sum().reset_index().set_index("entry_type")
+                st.subheader("Réel par type")
+                st.bar_chart(real_chart)
 
-            detail_rows = []
-
-            for _, row in revenue_pp_rows.iterrows():
-                detail_rows.append({
-                    "Type": "Revenue",
-                    "Catégorie": row["category"],
-                    "Description": row["description"],
-                    "Mode": "Direct",
-                    "Par personne": float(row["unit_amount"])
-                })
-
-            for _, row in cost_pp_rows.iterrows():
-                detail_rows.append({
-                    "Type": "Cost",
-                    "Catégorie": row["category"],
-                    "Description": row["description"],
-                    "Mode": "Direct",
-                    "Par personne": float(row["unit_amount"])
-                })
-
-            if participants > 0:
-                for _, row in revenue_general_rows.iterrows():
-                    detail_rows.append({
-                        "Type": "Revenue",
-                        "Catégorie": row["category"],
-                        "Description": row["description"],
-                        "Mode": "Réparti",
-                        "Par personne": float(row["expected_amount"]) / participants
-                    })
-
-                for _, row in cost_general_rows.iterrows():
-                    detail_rows.append({
-                        "Type": "Cost",
-                        "Catégorie": row["category"],
-                        "Description": row["description"],
-                        "Mode": "Réparti",
-                        "Par personne": float(row["expected_amount"]) / participants
-                    })
-
-            if detail_rows:
-                detail_df = pd.DataFrame(detail_rows)
-                st.dataframe(detail_df, use_container_width=True, hide_index=True)
-
-            finance_chart = budget.groupby("entry_type")["expected_amount"].sum().reset_index()
-            finance_chart = finance_chart.set_index("entry_type")
-            st.bar_chart(finance_chart)
+            cat_chart = budget.groupby(["category"])["expected_amount"].sum().reset_index().set_index("category")
+            st.subheader("Prévu par catégorie")
+            st.bar_chart(cat_chart)
 
         with st.form("add_budget"):
             st.subheader("Ajouter une ligne de budget")
@@ -1249,16 +1435,10 @@ elif page == "Budget":
                     refresh_project_totals(int(selected))
                     st.success("Ligne supprimée.")
                     st.rerun()
+
 elif page == "Tâches":
     st.title("Tâches")
-    tasks = fetch_df("""
-        SELECT t.task_id, t.project_id, p.project_name, ph.phase_name, t.task_name, t.task_responsible,
-               t.task_due_date, t.task_status, t.task_priority, t.notes
-        FROM tasks t
-        JOIN projects p ON p.project_id = t.project_id
-        LEFT JOIN phases ph ON ph.phase_id = t.phase_id
-        ORDER BY t.task_due_date, t.task_priority
-    """)
+    tasks = get_all_tasks()
 
     if not tasks.empty:
         f1, f2, f3, f4 = st.columns(4)
@@ -1286,11 +1466,7 @@ elif page == "Tâches":
         if "due_dt" in filtered_tasks.columns:
             drop_cols.append("due_dt")
 
-        st.dataframe(
-            filtered_tasks.drop(columns=drop_cols),
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(filtered_tasks.drop(columns=drop_cols), use_container_width=True, hide_index=True)
     else:
         st.info("Aucune tâche pour le moment.")
 
@@ -1388,6 +1564,38 @@ elif page == "Tâches":
                 st.success("Tâche supprimée.")
                 st.rerun()
 
+elif page == "Board":
+    st.title("Board des tâches")
+    tasks = get_all_tasks()
+
+    if tasks.empty:
+        st.info("Aucune tâche disponible.")
+    else:
+        project_names = ["Tous"] + sorted(tasks["project_name"].dropna().unique().tolist())
+        selected_project = st.selectbox("Filtre projet", project_names)
+
+        if selected_project != "Tous":
+            tasks = tasks[tasks["project_name"] == selected_project]
+
+        c1, c2, c3, c4 = st.columns(4)
+        groups = {
+            "À faire": c1,
+            "En cours": c2,
+            "Bloqué": c3,
+            "Terminé": c4
+        }
+
+        for status_name, col in groups.items():
+            with col:
+                st.markdown(f'<div class="status-card"><h4>{status_name}</h4>', unsafe_allow_html=True)
+                subset = tasks[tasks["task_status"] == status_name]
+                if subset.empty:
+                    st.caption("Aucune tâche")
+                else:
+                    for _, row in subset.iterrows():
+                        render_task_card(row)
+                st.markdown("</div>", unsafe_allow_html=True)
+
 elif page == "Équipe":
     st.title("Équipe")
     people = fetch_df("SELECT * FROM people ORDER BY full_name")
@@ -1447,3 +1655,111 @@ elif page == "Équipe":
                 execute("DELETE FROM people WHERE person_id = ?", (int(person_id),))
                 st.success("Personne supprimée.")
                 st.rerun()
+
+elif page == "Analytics":
+    st.title("Analytics")
+    projects = fetch_df("SELECT * FROM projects ORDER BY start_date")
+    tasks = get_all_tasks()
+    budget = fetch_df("SELECT * FROM budget")
+
+    if projects.empty:
+        st.info("Aucun projet disponible.")
+    else:
+        progress_df = get_project_progress()
+        a1, a2 = st.columns(2)
+
+        with a1:
+            st.subheader("Profit par projet")
+            proj_fin = projects[["project_name", "expected_revenue", "expected_cost"]].copy()
+            proj_fin["profit"] = proj_fin["expected_revenue"].fillna(0) - proj_fin["expected_cost"].fillna(0)
+            st.bar_chart(proj_fin.set_index("project_name")[["profit"]])
+
+        with a2:
+            st.subheader("Progression par projet")
+            if not progress_df.empty:
+                st.bar_chart(progress_df.set_index("project_name")[["progress_pct"]])
+
+        if not tasks.empty:
+            st.subheader("Tâches par statut")
+            task_status_chart = tasks.groupby("task_status").size().reset_index(name="count").set_index("task_status")
+            st.bar_chart(task_status_chart)
+
+            st.subheader("Tâches par priorité")
+            task_priority_chart = tasks.groupby("task_priority").size().reset_index(name="count").set_index("task_priority")
+            st.bar_chart(task_priority_chart)
+
+        if not budget.empty:
+            st.subheader("Budget par catégorie")
+            budget_cat = budget.groupby("category")["expected_amount"].sum().reset_index().set_index("category")
+            st.bar_chart(budget_cat)
+
+            st.subheader("Prévu vs Réel")
+            compare_df = pd.DataFrame({
+                "Prévu": [budget["expected_amount"].fillna(0).sum()],
+                "Réel": [budget["real_amount"].fillna(0).sum()]
+            }, index=["Global"])
+            st.bar_chart(compare_df)
+
+elif page == "Backup":
+    st.title("Backup et restauration")
+
+    st.subheader("1. Télécharger la base de données complète")
+    db_bytes = get_db_download_bytes()
+    if db_bytes:
+        st.download_button(
+            label="Télécharger le fichier .db",
+            data=db_bytes,
+            file_name="ia_soccer_projects.db",
+            mime="application/octet-stream"
+        )
+    else:
+        st.warning("Aucune base de données trouvée.")
+
+    st.subheader("2. Créer un backup local")
+    if st.button("Créer un backup maintenant"):
+        backup_file = create_db_backup()
+        if backup_file:
+            st.success(f"Backup créé : {backup_file.name}")
+        else:
+            st.error("Impossible de créer le backup.")
+
+    st.subheader("3. Liste des backups locaux")
+    backups = list_backups()
+    if backups:
+        st.dataframe(
+            pd.DataFrame({"Fichiers backup": [b.name for b in backups]}),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Aucun backup local disponible.")
+
+    st.subheader("4. Restaurer un backup .db")
+    uploaded_db = st.file_uploader("Importer un fichier backup .db", type=["db"])
+    if uploaded_db is not None:
+        if st.button("Restaurer ce backup"):
+            ok, msg = restore_db_backup(uploaded_db)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    st.subheader("5. Export complet")
+    excel_data = export_all_to_excel()
+    st.download_button(
+        label="Télécharger export Excel",
+        data=excel_data,
+        file_name="ia_soccer_projects_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    json_data = export_all_to_json()
+    st.download_button(
+        label="Télécharger export JSON",
+        data=json_data,
+        file_name="ia_soccer_projects_export.json",
+        mime="application/json"
+    )
+
+    st.info("Conseil: garde toujours um backup .db e um export Excel.")
