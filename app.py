@@ -487,9 +487,19 @@ if search_term:
 if page == "Dashboard":
     st.title("Dashboard exécutif")
 
-    count, rev, cost, profit = metrics()
-    real_rev, real_cost, real_profit = get_real_totals()
-    overdue, urgent = get_overdue_urgent_counts()
+    def metrics():
+    projects = fetch_df("SELECT * FROM projects")
+    if projects.empty:
+        return 0, 0, 0, 0
+
+    projects["expected_revenue"] = pd.to_numeric(projects["expected_revenue"], errors="coerce").fillna(0)
+    projects["expected_cost"] = pd.to_numeric(projects["expected_cost"], errors="coerce").fillna(0)
+
+    rev = projects["expected_revenue"].sum()
+    cost = projects["expected_cost"].sum()
+    profit = rev - cost
+
+    return len(projects), rev, cost, profit
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Projets", count)
